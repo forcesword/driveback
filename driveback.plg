@@ -7,7 +7,7 @@
   <!ENTITY gitURL    "https://raw.githubusercontent.com/forcesword/driveback/main">
   <!ENTITY pluginURL "&gitURL;/driveback.plg">
   <!ENTITY pkg       "&gitURL;/archive/driveback-&version;.txz">
-  <!ENTITY md5       "">
+  <!ENTITY md5       "949e075f71ed10a5976334328772f387">
 ]>
 
 <PLUGIN  name="&name;"
