@@ -1,0 +1,407 @@
+Menu="DriveBack"
+Icon="hdd"
+Title="DriveBack"
+---
+<?php
+/*
+ * DriveBack - USB Backup Plugin for Unraid
+ * Main UI page (driveback.page)
+ */
+
+$JOBS_DIR  = "/boot/config/plugins/driveback/jobs";
+$LOG_DIR   = "/var/log/driveback";
+
+// ── Load all jobs ─────────────────────────────────────────────────────────────
+function load_jobs($dir) {
+  $jobs = [];
+  if (!is_dir($dir)) return $jobs;
+  foreach (glob("$dir/*.conf") as $f) {
+    $id   = basename($f, '.conf');
+    $data = parse_ini_file($f);
+    if ($data !== false) {
+      $data['id'] = $id;
+      $jobs[$id]  = $data;
+    }
+  }
+  return $jobs;
+}
+
+// ── Detect mounted USB drives ─────────────────────────────────────────────────
+function get_usb_drives() {
+  $drives = [];
+  $mounts = file('/proc/mounts', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+  foreach ($mounts as $line) {
+    $parts = preg_split('/\s+/', $line);
+    $dev   = $parts[0] ?? '';
+    $mp    = $parts[1] ?? '';
+    // /mnt/disks/ is where Unraid mounts unassigned devices (USB drives)
+    if (strpos($mp, '/mnt/disks/') === 0) {
+      $name = basename($mp);
+      $drives[$mp] = $name;
+    }
+  }
+  return $drives;
+}
+
+// ── Detect user shares ────────────────────────────────────────────────────────
+function get_shares() {
+  $shares = [];
+  $dir = '/mnt/user';
+  if (is_dir($dir)) {
+    foreach (scandir($dir) as $entry) {
+      if ($entry === '.' || $entry === '..') continue;
+      if (is_dir("$dir/$entry")) $shares[] = $entry;
+    }
+  }
+  return $shares;
+}
+
+$jobs   = load_jobs($JOBS_DIR);
+$drives = get_usb_drives();
+$shares = get_shares();
+?>
+
+<!-- ── Styles ── -->
+<style>
+.db-wrap        { max-width:900px; margin:0 auto; padding:0 8px 40px; }
+.db-header      { display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; }
+.db-title       { font-size:20px; font-weight:500; color:var(--color-text-primary,#333); }
+.db-btn         { display:inline-flex; align-items:center; gap:6px; padding:8px 16px; border-radius:6px; border:none; cursor:pointer; font-size:13px; font-weight:500; transition:opacity .15s; }
+.db-btn:hover   { opacity:.85; }
+.db-btn-primary { background:#3b82f6; color:#fff; }
+.db-btn-danger  { background:#ef4444; color:#fff; }
+.db-btn-sm      { padding:5px 10px; font-size:12px; }
+.db-btn-run     { background:#10b981; color:#fff; }
+.db-btn-edit    { background:#6b7280; color:#fff; }
+.db-card        { background:var(--color-background-secondary,#f9f9f9); border:1px solid var(--color-border-tertiary,#ddd); border-radius:8px; margin-bottom:16px; overflow:hidden; }
+.db-card-head   { display:flex; align-items:center; padding:14px 18px; gap:12px; }
+.db-job-name    { font-weight:500; font-size:15px; flex:1; }
+.db-job-meta    { font-size:12px; color:var(--color-text-secondary,#666); display:flex; gap:16px; flex-wrap:wrap; }
+.db-job-meta span { display:flex; align-items:center; gap:4px; }
+.db-actions     { display:flex; gap:8px; }
+.db-badge       { display:inline-block; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500; }
+.db-badge-ok    { background:#d1fae5; color:#065f46; }
+.db-badge-error { background:#fee2e2; color:#991b1b; }
+.db-badge-never { background:#e5e7eb; color:#374151; }
+.db-badge-running { background:#dbeafe; color:#1e40af; }
+.db-empty       { text-align:center; padding:60px 20px; color:var(--color-text-secondary,#888); }
+.db-empty i     { font-size:48px; display:block; margin-bottom:12px; }
+
+/* Modal */
+.db-overlay     { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:1000; align-items:center; justify-content:center; }
+.db-overlay.open{ display:flex; }
+.db-modal       { background:var(--color-background-primary,#fff); border-radius:12px; width:100%; max-width:540px; padding:28px; box-shadow:0 8px 32px rgba(0,0,0,.2); }
+.db-modal h2    { font-size:17px; font-weight:500; margin:0 0 20px; }
+.db-field       { margin-bottom:16px; }
+.db-field label { display:block; font-size:13px; font-weight:500; margin-bottom:6px; color:var(--color-text-primary,#333); }
+.db-field input,
+.db-field select{ width:100%; padding:8px 10px; border:1px solid var(--color-border-secondary,#ccc); border-radius:6px; font-size:13px; background:var(--color-background-primary,#fff); color:var(--color-text-primary,#333); box-sizing:border-box; }
+.db-field-row   { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.db-hint        { font-size:11px; color:var(--color-text-secondary,#888); margin-top:4px; }
+.db-modal-foot  { display:flex; gap:10px; justify-content:flex-end; margin-top:24px; }
+.db-btn-cancel  { background:var(--color-background-secondary,#eee); color:var(--color-text-primary,#333); border:1px solid var(--color-border-secondary,#ccc); }
+
+/* Log modal */
+.db-log         { font-family:monospace; font-size:12px; background:#1a1a1a; color:#d4d4d4; padding:14px; border-radius:6px; max-height:380px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; margin-top:12px; }
+
+/* Toggle */
+.db-toggle      { position:relative; display:inline-block; width:36px; height:20px; }
+.db-toggle input{ opacity:0; width:0; height:0; }
+.db-slider      { position:absolute; inset:0; background:#ccc; border-radius:10px; cursor:pointer; transition:.2s; }
+.db-slider:before{ position:absolute; content:""; height:14px; width:14px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.2s; }
+.db-toggle input:checked + .db-slider { background:#3b82f6; }
+.db-toggle input:checked + .db-slider:before { transform:translateX(16px); }
+</style>
+
+<!-- ── Markup ── -->
+<div class="db-wrap">
+  <div class="db-header">
+    <div class="db-title">DriveBack &mdash; USB Backup</div>
+    <button class="db-btn db-btn-primary" onclick="openModal()">
+      <i class="fa fa-plus"></i> New Job
+    </button>
+  </div>
+
+  <?php if (empty($jobs)): ?>
+  <div class="db-card">
+    <div class="db-empty">
+      <i class="fa fa-hdd-o"></i>
+      No backup jobs yet. Click <strong>New Job</strong> to get started.
+    </div>
+  </div>
+  <?php else: ?>
+    <?php foreach ($jobs as $id => $j): ?>
+    <?php
+      $status   = $j['LAST_STATUS'] ?? 'never';
+      $last_run = $j['LAST_RUN']    ?? '';
+      $enabled  = ($j['ENABLED']    ?? 'yes') === 'yes';
+      $badge_class = $status === 'ok' ? 'db-badge-ok' : ($status === 'error' ? 'db-badge-error' : 'db-badge-never');
+    ?>
+    <div class="db-card" id="job-card-<?= htmlspecialchars($id) ?>">
+      <div class="db-card-head">
+        <div style="display:flex;flex-direction:column;gap:6px;flex:1">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="db-job-name"><?= htmlspecialchars($j['JOB_NAME'] ?? $id) ?></span>
+            <span class="db-badge <?= $badge_class ?>"><?= htmlspecialchars($status) ?></span>
+          </div>
+          <div class="db-job-meta">
+            <span><i class="fa fa-folder-open-o"></i> <?= htmlspecialchars($j['SOURCE'] ?? '') ?></span>
+            <span><i class="fa fa-usb"></i> <?= htmlspecialchars($j['DEST'] ?? '') ?></span>
+            <span><i class="fa fa-clock-o"></i> <?= $last_run ? htmlspecialchars($last_run) : 'Never run' ?></span>
+            <span><i class="fa fa-calendar"></i> <?= htmlspecialchars($j['SCHEDULE'] ?? '') ?></span>
+          </div>
+        </div>
+        <div class="db-actions">
+          <label class="db-toggle" title="Enable/disable schedule">
+            <input type="checkbox" <?= $enabled ? 'checked' : '' ?> onchange="toggleJob('<?= $id ?>', this.checked)">
+            <span class="db-slider"></span>
+          </label>
+          <button class="db-btn db-btn-sm db-btn-run" onclick="runJob('<?= $id ?>')">
+            <i class="fa fa-play"></i> Run
+          </button>
+          <button class="db-btn db-btn-sm db-btn-edit" onclick="openModal('<?= $id ?>')">
+            <i class="fa fa-pencil"></i>
+          </button>
+          <button class="db-btn db-btn-sm db-btn-danger" onclick="deleteJob('<?= $id ?>')">
+            <i class="fa fa-trash"></i>
+          </button>
+          <button class="db-btn db-btn-sm db-btn-edit" onclick="viewLog('<?= $id ?>')">
+            <i class="fa fa-file-text-o"></i> Log
+          </button>
+        </div>
+      </div>
+    </div>
+    <?php endforeach; ?>
+  <?php endif; ?>
+</div>
+
+<!-- ── Job modal ── -->
+<div class="db-overlay" id="job-modal">
+  <div class="db-modal">
+    <h2 id="modal-title">New Backup Job</h2>
+    <input type="hidden" id="edit-id">
+
+    <div class="db-field">
+      <label>Job name</label>
+      <input type="text" id="f-name" placeholder="e.g. Media Backup">
+    </div>
+
+    <div class="db-field-row">
+      <div class="db-field">
+        <label>Source share</label>
+        <select id="f-source">
+          <option value="">— select share —</option>
+          <?php foreach ($shares as $s): ?>
+          <option value="/mnt/user/<?= htmlspecialchars($s) ?>"><?= htmlspecialchars($s) ?></option>
+          <?php endforeach; ?>
+          <option value="__custom">Custom path…</option>
+        </select>
+      </div>
+      <div class="db-field">
+        <label>Destination (USB drive)</label>
+        <select id="f-dest">
+          <option value="">— select drive —</option>
+          <?php foreach ($drives as $mp => $name): ?>
+          <option value="<?= htmlspecialchars($mp) ?>"><?= htmlspecialchars($name) ?> (<?= htmlspecialchars($mp) ?>)</option>
+          <?php endforeach; ?>
+          <option value="__custom">Custom path…</option>
+        </select>
+        <?php if (empty($drives)): ?>
+        <div class="db-hint">No USB drives detected. Connect a drive via Unraid's Unassigned Devices.</div>
+        <?php endif; ?>
+      </div>
+    </div>
+
+    <div class="db-field" id="source-custom-wrap" style="display:none">
+      <label>Custom source path</label>
+      <input type="text" id="f-source-custom" placeholder="/mnt/user/myshare">
+    </div>
+
+    <div class="db-field" id="dest-custom-wrap" style="display:none">
+      <label>Custom destination path</label>
+      <input type="text" id="f-dest-custom" placeholder="/mnt/disks/MyUSB/backup">
+    </div>
+
+    <div class="db-field-row">
+      <div class="db-field">
+        <label>Schedule time (HH:MM)</label>
+        <input type="time" id="f-time" value="02:00">
+        <div class="db-hint">Backup runs daily at this time.</div>
+      </div>
+      <div class="db-field">
+        <label>Enabled</label>
+        <select id="f-enabled">
+          <option value="yes">Yes — run on schedule</option>
+          <option value="no">No — manual only</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="db-modal-foot">
+      <button class="db-btn db-btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="db-btn db-btn-primary" onclick="saveJob()">Save Job</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Log modal ── -->
+<div class="db-overlay" id="log-modal">
+  <div class="db-modal" style="max-width:700px">
+    <h2 id="log-title">Job Log</h2>
+    <div class="db-log" id="log-content">Loading…</div>
+    <div class="db-modal-foot">
+      <button class="db-btn db-btn-cancel" onclick="closeLogModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── JavaScript ── -->
+<script>
+const JOBS = <?= json_encode($jobs, JSON_PRETTY_PRINT) ?>;
+
+// ── Modal helpers ──────────────────────────────────────────────────────────────
+function openModal(id) {
+  document.getElementById('edit-id').value = id || '';
+  document.getElementById('modal-title').textContent = id ? 'Edit Backup Job' : 'New Backup Job';
+  if (id && JOBS[id]) {
+    const j = JOBS[id];
+    document.getElementById('f-name').value    = j.JOB_NAME || '';
+    document.getElementById('f-enabled').value = j.ENABLED  || 'yes';
+    setSelectOrCustom('f-source', 'source-custom-wrap', 'f-source-custom', j.SOURCE || '');
+    setSelectOrCustom('f-dest',   'dest-custom-wrap',   'f-dest-custom',   j.DEST   || '');
+    const parts = (j.SCHEDULE || '0 2 * * *').split(' ');
+    const hh = parts[1]?.padStart(2,'0') || '02';
+    const mm = parts[0]?.padStart(2,'0') || '00';
+    document.getElementById('f-time').value = `${hh}:${mm}`;
+  } else {
+    document.getElementById('f-name').value    = '';
+    document.getElementById('f-source').value  = '';
+    document.getElementById('f-dest').value    = '';
+    document.getElementById('f-time').value    = '02:00';
+    document.getElementById('f-enabled').value = 'yes';
+    document.getElementById('source-custom-wrap').style.display = 'none';
+    document.getElementById('dest-custom-wrap').style.display   = 'none';
+  }
+  document.getElementById('job-modal').classList.add('open');
+}
+
+function setSelectOrCustom(selId, wrapId, inputId, value) {
+  const sel = document.getElementById(selId);
+  let found = false;
+  for (const opt of sel.options) {
+    if (opt.value === value) { sel.value = value; found = true; break; }
+  }
+  if (!found && value) {
+    sel.value = '__custom';
+    document.getElementById(wrapId).style.display  = '';
+    document.getElementById(inputId).value         = value;
+  }
+}
+
+function closeModal() {
+  document.getElementById('job-modal').classList.remove('open');
+}
+
+document.getElementById('f-source').addEventListener('change', function() {
+  document.getElementById('source-custom-wrap').style.display = this.value === '__custom' ? '' : 'none';
+});
+document.getElementById('f-dest').addEventListener('change', function() {
+  document.getElementById('dest-custom-wrap').style.display = this.value === '__custom' ? '' : 'none';
+});
+
+// ── Save job ───────────────────────────────────────────────────────────────────
+function saveJob() {
+  const id      = document.getElementById('edit-id').value;
+  const name    = document.getElementById('f-name').value.trim();
+  const srcSel  = document.getElementById('f-source').value;
+  const dstSel  = document.getElementById('f-dest').value;
+  const source  = srcSel === '__custom' ? document.getElementById('f-source-custom').value.trim() : srcSel;
+  const dest    = dstSel === '__custom' ? document.getElementById('f-dest-custom').value.trim()   : dstSel;
+  const time    = document.getElementById('f-time').value;
+  const enabled = document.getElementById('f-enabled').value;
+
+  if (!name)   { alert('Job name is required.');          return; }
+  if (!source) { alert('Source path is required.');       return; }
+  if (!dest)   { alert('Destination path is required.');  return; }
+
+  const [hh, mm] = time.split(':');
+  const schedule = `${parseInt(mm)} ${parseInt(hh)} * * *`;
+
+  fetch('plugins/driveback/include/jobs.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action:'save', id, JOB_NAME:name, SOURCE:source, DEST:dest, SCHEDULE:schedule, ENABLED:enabled })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) { closeModal(); location.reload(); }
+    else       alert('Error: ' + d.error);
+  })
+  .catch(() => alert('Request failed.'));
+}
+
+// ── Run job ────────────────────────────────────────────────────────────────────
+function runJob(id) {
+  if (!confirm('Run backup job now?')) return;
+  fetch('plugins/driveback/include/exec.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action:'run', id })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) alert('Job started. Check the log for progress.');
+    else       alert('Error: ' + d.error);
+  });
+}
+
+// ── Toggle enabled ─────────────────────────────────────────────────────────────
+function toggleJob(id, enabled) {
+  fetch('plugins/driveback/include/jobs.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action:'toggle', id, enabled: enabled ? 'yes' : 'no' })
+  })
+  .then(r => r.json())
+  .then(d => { if (!d.ok) alert('Error: ' + d.error); });
+}
+
+// ── Delete job ─────────────────────────────────────────────────────────────────
+function deleteJob(id) {
+  if (!confirm('Delete this backup job?')) return;
+  fetch('plugins/driveback/include/jobs.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action:'delete', id })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) document.getElementById('job-card-' + id).remove();
+    else       alert('Error: ' + d.error);
+  });
+}
+
+// ── View log ───────────────────────────────────────────────────────────────────
+function viewLog(id) {
+  document.getElementById('log-title').textContent   = 'Log: ' + (JOBS[id]?.JOB_NAME || id);
+  document.getElementById('log-content').textContent = 'Loading…';
+  document.getElementById('log-modal').classList.add('open');
+
+  fetch('plugins/driveback/include/jobs.php?action=log&id=' + encodeURIComponent(id))
+  .then(r => r.json())
+  .then(d => {
+    document.getElementById('log-content').textContent = d.log || '(no log yet)';
+  });
+}
+
+function closeLogModal() {
+  document.getElementById('log-modal').classList.remove('open');
+}
+
+// Close modals on overlay click
+['job-modal','log-modal'].forEach(id => {
+  document.getElementById(id).addEventListener('click', function(e) {
+    if (e.target === this) this.classList.remove('open');
+  });
+});
+</script>

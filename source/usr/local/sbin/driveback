@@ -1,0 +1,149 @@
+#!/bin/bash
+# driveback - main backend script for DriveBack plugin
+# Usage:
+#   driveback run <job_id>
+#   driveback list
+#   driveback rebuild-cron
+
+JOBS_DIR="/boot/config/plugins/driveback/jobs"
+LOG_DIR="/var/log/driveback"
+CRON_FILE="/etc/cron.d/driveback"
+
+mkdir -p "$JOBS_DIR" "$LOG_DIR"
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+job_file() {
+  echo "$JOBS_DIR/$1.conf"
+}
+
+load_job() {
+  local jf
+  jf=$(job_file "$1")
+  [[ -f "$jf" ]] || { echo "ERROR: job '$1' not found"; exit 1; }
+  # shellcheck source=/dev/null
+  source "$jf"
+}
+
+# ── run <job_id> ───────────────────────────────────────────────────────────────
+
+cmd_run() {
+  local job_id="$1"
+  load_job "$job_id"
+
+  local logfile="$LOG_DIR/${job_id}.log"
+  local tmplog="$LOG_DIR/${job_id}.tmp"
+
+  log "Starting job: $JOB_NAME ($job_id)" | tee "$tmplog"
+  log "Source:      $SOURCE"              | tee -a "$tmplog"
+  log "Destination: $DEST"                | tee -a "$tmplog"
+
+  # Validate source
+  if [[ ! -d "$SOURCE" ]]; then
+    log "ERROR: Source path does not exist: $SOURCE" | tee -a "$tmplog"
+    echo "LAST_STATUS=error"    >> "$(job_file "$job_id")"
+    echo "LAST_RUN=$(date '+%Y-%m-%d %H:%M:%S')" >> "$(job_file "$job_id")"
+    mv "$tmplog" "$logfile"
+    exit 1
+  fi
+
+  # Validate destination mount
+  if [[ ! -d "$DEST" ]]; then
+    log "ERROR: Destination path does not exist: $DEST" | tee -a "$tmplog"
+    log "       Is the USB drive connected and mounted?" | tee -a "$tmplog"
+    echo "LAST_STATUS=error"    >> "$(job_file "$job_id")"
+    echo "LAST_RUN=$(date '+%Y-%m-%d %H:%M:%S')" >> "$(job_file "$job_id")"
+    mv "$tmplog" "$logfile"
+    exit 1
+  fi
+
+  log "Running rclone sync..." | tee -a "$tmplog"
+
+  rclone sync \
+    "$SOURCE" \
+    "$DEST" \
+    --progress \
+    --log-level INFO \
+    --log-file "$tmplog" \
+    --stats 30s \
+    --transfers 4 \
+    --checkers 8 \
+    --no-traverse \
+    2>&1
+
+  local rc=$?
+
+  if [[ $rc -eq 0 ]]; then
+    log "Job completed successfully." | tee -a "$tmplog"
+    # Write status back into job config (append/overwrite status keys)
+    local tmp
+    tmp=$(grep -v '^LAST_STATUS\|^LAST_RUN' "$(job_file "$job_id")")
+    echo "$tmp"                                          > "$(job_file "$job_id")"
+    echo "LAST_STATUS=ok"                               >> "$(job_file "$job_id")"
+    echo "LAST_RUN=$(date '+%Y-%m-%d %H:%M:%S')"       >> "$(job_file "$job_id")"
+  else
+    log "Job finished with errors (exit code $rc)." | tee -a "$tmplog"
+    local tmp
+    tmp=$(grep -v '^LAST_STATUS\|^LAST_RUN' "$(job_file "$job_id")")
+    echo "$tmp"                                          > "$(job_file "$job_id")"
+    echo "LAST_STATUS=error"                            >> "$(job_file "$job_id")"
+    echo "LAST_RUN=$(date '+%Y-%m-%d %H:%M:%S')"       >> "$(job_file "$job_id")"
+  fi
+
+  mv "$tmplog" "$logfile"
+  exit $rc
+}
+
+# ── list ───────────────────────────────────────────────────────────────────────
+
+cmd_list() {
+  for f in "$JOBS_DIR"/*.conf 2>/dev/null; do
+    [[ -f "$f" ]] || continue
+    local id
+    id=$(basename "$f" .conf)
+    source "$f"
+    echo "$id|$JOB_NAME|$SOURCE|$DEST|$SCHEDULE|${LAST_STATUS:-never}|${LAST_RUN:-}"
+  done
+}
+
+# ── rebuild-cron ───────────────────────────────────────────────────────────────
+
+cmd_rebuild_cron() {
+  echo "# DriveBack — auto-generated, do not edit manually" > "$CRON_FILE"
+  echo "# Rebuilt: $(date)"                                >> "$CRON_FILE"
+  echo ""                                                  >> "$CRON_FILE"
+
+  for f in "$JOBS_DIR"/*.conf 2>/dev/null; do
+    [[ -f "$f" ]] || continue
+    local id
+    id=$(basename "$f" .conf)
+    source "$f"
+
+    if [[ "$ENABLED" == "yes" && -n "$SCHEDULE" ]]; then
+      echo "$SCHEDULE root /usr/local/sbin/driveback run $id >> /var/log/driveback/${id}_cron.log 2>&1" >> "$CRON_FILE"
+    fi
+  done
+
+  # Reload cron
+  if command -v crond &>/dev/null; then
+    killall -HUP crond 2>/dev/null || true
+  fi
+
+  log "Cron rebuilt."
+}
+
+# ── dispatch ───────────────────────────────────────────────────────────────────
+
+case "$1" in
+  run)           cmd_run "$2" ;;
+  list)          cmd_list ;;
+  rebuild-cron)  cmd_rebuild_cron ;;
+  *)
+    echo "Usage: driveback {run <job_id>|list|rebuild-cron}"
+    exit 1
+    ;;
+esac

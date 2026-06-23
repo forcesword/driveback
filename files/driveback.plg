@@ -1,0 +1,84 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+  <!ENTITY name      "driveback">
+  <!ENTITY author    "forcesword">
+  <!ENTITY version   "0.1.0">
+  <!ENTITY launch    "DriveBack">
+  <!ENTITY gitURL    "https://raw.githubusercontent.com/forcesword/driveback/main">
+  <!ENTITY pluginURL "&gitURL;/driveback.plg">
+  <!ENTITY pkg       "&gitURL;/archive/driveback-&version;.txz">
+  <!ENTITY md5       "">
+]>
+
+<PLUGIN  name="&name;"
+         author="&author;"
+         version="&version;"
+         launch="&launch;"
+         pluginURL="&pluginURL;"
+         icon="hdd">
+
+<CHANGES>
+###0.1.0
+- Initial release
+- USB mirror backup via rclone
+- Job creation, scheduling, manual run, and log viewer
+</CHANGES>
+
+<!--
+  Check for rclone dependency
+-->
+<FILE Run="/bin/bash">
+<INLINE>
+if ! command -v rclone &>/dev/null; then
+  echo "-----------------------------------------------------------"
+  echo " DriveBack requires rclone to be installed."
+  echo " Install it via Unraid's NerdTools or manually."
+  echo "-----------------------------------------------------------"
+  exit 1
+fi
+echo "rclone found: $(rclone version | head -1)"
+</INLINE>
+</FILE>
+
+<!--
+  Install the plugin package
+-->
+<FILE Name="/boot/config/plugins/driveback/driveback-&version;.txz" Run="upgradepkg --install-new">
+<URL>&pkg;</URL>
+<MD5>&md5;</MD5>
+</FILE>
+
+<!--
+  Create config and log directories (persist across reboots via /boot)
+-->
+<FILE Run="/bin/bash">
+<INLINE>
+mkdir -p /boot/config/plugins/driveback/jobs
+mkdir -p /var/log/driveback
+echo "DriveBack &version; installed successfully."
+</INLINE>
+</FILE>
+
+<!--
+  Register cron job runner
+-->
+<FILE Name="/etc/cron.d/driveback" Mode="0644">
+<INLINE>
+# DriveBack cron — managed by the plugin, do not edit manually
+# Individual job schedules are injected here by driveback-cron
+</INLINE>
+</FILE>
+
+<!--
+  Uninstall handler
+-->
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+rm -rf /usr/local/emhttp/plugins/driveback
+rm -f  /etc/cron.d/driveback
+removepkg driveback-&version; 2>/dev/null || true
+echo "DriveBack removed."
+</INLINE>
+</FILE>
+
+</PLUGIN>
