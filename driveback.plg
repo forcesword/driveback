@@ -29,7 +29,7 @@
 -->
 <FILE Run="/bin/bash">
 <INLINE>
-if ! command -v rclone &>/dev/null; then
+if ! command -v rclone >/dev/null 2>&amp;1; then
   echo "-----------------------------------------------------------"
   echo " DriveBack requires rclone to be installed."
   echo " Install it via Unraid's NerdTools or manually."
